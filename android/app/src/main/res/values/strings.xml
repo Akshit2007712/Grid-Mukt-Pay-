@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TokenPay</string>
+    <string name="title_activity_main">TokenPay</string>
+    <string name="package_name">com.tokenpay.app</string>
+    <string name="custom_url_scheme">com.tokenpay.app</string>
+</resources>
