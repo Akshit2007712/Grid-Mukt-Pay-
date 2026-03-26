@@ -22,7 +22,7 @@ export function WalletCard({ realBalance, tokenBalance, isOnline }: WalletCardPr
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-2">
             <Wallet className="w-5 h-5 opacity-80" />
-            <span className="text-sm font-medium opacity-80">TokenPay Wallet</span>
+            <span className="text-sm font-medium opacity-80">GridMukt Wallet</span>
           </div>
           <div className="flex items-center gap-1.5 text-xs font-medium bg-white/10 rounded-full px-3 py-1">
             {isOnline ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}

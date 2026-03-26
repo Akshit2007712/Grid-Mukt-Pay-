@@ -1,5 +1,5 @@
 {
-  "name": "vite_react_shadcn_ts",
+  "name": "gridmukt-pay",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -104,5 +104,13 @@
   "main": "eslint.config.js",
   "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Akshit2007712/Grid-Mukt-Pay-.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Akshit2007712/Grid-Mukt-Pay-/issues"
+  },
+  "homepage": "https://github.com/Akshit2007712/Grid-Mukt-Pay-#readme"
 }

@@ -26,7 +26,7 @@ export default function Index() {
           <div>
             <h1 className="text-2xl font-extrabold text-foreground flex items-center gap-2">
               <Zap className="w-6 h-6 text-primary" />
-              TokenPay
+              GridMukt Pay
             </h1>
             <p className="text-xs text-muted-foreground mt-0.5">Your hybrid payment wallet</p>
           </div>
@@ -57,7 +57,7 @@ export default function Index() {
               <p className="text-xs font-semibold text-accent-foreground">{pendingCount} pending transaction{pendingCount > 1 ? 's' : ''}</p>
               <p className="text-[10px] text-muted-foreground">Sync to update balances</p>
             </div>
-            <Button variant="gradient" size="sm" onClick={syncTransactions} disabled={isSyncing}>
+            <Button variant="gradient" size="sm" onClick={() => syncTransactions()} disabled={isSyncing}>
               <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
               {isSyncing ? 'Syncing...' : 'Sync Now'}
             </Button>

@@ -142,7 +142,7 @@ export async function startListening(
         for (const record of records) {
           if (record?.payload) {
             const decoder = new TextDecoder();
-            let payloadData = new Uint8Array(record.payload);
+            const payloadData = new Uint8Array(record.payload);
             
             // If it's a Text record (TNF 1, Type 'T'), it has a prefix
             // Byte 0 is status, then lang code.

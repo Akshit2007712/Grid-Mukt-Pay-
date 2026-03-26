@@ -10,21 +10,32 @@ export interface Transaction {
   signature: string;
 }
 
-const STORAGE_KEY = 'tokenpay_data';
+const STORAGE_KEY = 'gridmukt_data';
 
 interface TokenData {
+  realBalance: number;
   tokenBalance: number;
   transactions: Transaction[];
 }
 
 function getData(): TokenData {
   const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return { tokenBalance: 0, transactions: [] };
+  if (!raw) return { realBalance: 10000, tokenBalance: 0, transactions: [] };
   return JSON.parse(raw);
 }
 
 function setData(data: TokenData) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+export function getRealBalance(): number {
+  return getData().realBalance;
+}
+
+export function setRealBalance(balance: number) {
+  const data = getData();
+  data.realBalance = balance;
+  setData(data);
 }
 
 export function getTokenBalance(): number {

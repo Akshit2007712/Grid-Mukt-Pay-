@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.tokenpay.app',
-  appName: 'TokenPay',
+  appName: 'GridMukt Pay',
   webDir: 'dist',
 };
 
