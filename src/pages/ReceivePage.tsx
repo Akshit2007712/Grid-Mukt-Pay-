@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import { Nfc, Bluetooth, CheckCircle2, Wifi, WifiOff, QrCode, SendIcon } from 'lucide-react';
+import { Nfc, Bluetooth, CheckCircle2, Wifi, WifiOff, QrCode, SendIcon, Scan, X as CloseIcon } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Button } from '@/components/ui/button';
 import { BottomNav } from '@/components/BottomNav';
@@ -42,6 +42,10 @@ export default function ReceivePage() {
   const channelRef = useRef<any>(null);
   const p2pCleanupRef = useRef<(() => void) | null>(null);
   const bleScanActive = useRef(false);
+
+  // QR Scanner State
+  const [showScanner, setShowScanner] = useState(false);
+  const scannerRef = useRef<any>(null);
 
   // Initialise persistent identity and status checks
   useEffect(() => {
@@ -145,8 +149,55 @@ export default function ReceivePage() {
         BleClient.stopLEScan().catch(() => {});
         (BleClient as any).stopAdvertising().catch(() => {});
       });
+      // Stop QR Scanner if running
+      if (scannerRef.current) {
+        scannerRef.current.stop().catch(() => {});
+      }
     };
   }, [myId, handleReceive]);
+
+  const handleQRDetected = useCallback((decodedText: string) => {
+    try {
+      const data = JSON.parse(decodedText);
+      if (data.amount && data.signature === 'gridmukt_final_pro_sig') {
+        setShowScanner(false);
+        if (scannerRef.current) {
+           scannerRef.current.stop().catch(() => {});
+           scannerRef.current = null;
+        }
+        handleReceive(data);
+        toast.success('Offline Payment QR Scanned!');
+      } else {
+        toast.error('Invalid Payment QR');
+      }
+    } catch {
+      toast.error('Unrecognized QR Format');
+    }
+  }, [handleReceive]);
+
+  useEffect(() => {
+    let html5QrCode: any = null;
+    if (showScanner) {
+      import('html5-qrcode').then(({ Html5Qrcode }) => {
+        html5QrCode = new Html5Qrcode("receive-qr-reader");
+        scannerRef.current = html5QrCode;
+        html5QrCode.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 280, height: 280 } },
+          handleQRDetected,
+          () => {} // silent track
+        ).catch(() => {
+          toast.error("Camera access denied or busy");
+          setShowScanner(false);
+        });
+      });
+    }
+    return () => {
+      if (html5QrCode && html5QrCode.isScanning) {
+        html5QrCode.stop().catch(() => {});
+      }
+    };
+  }, [showScanner, handleQRDetected]);
 
   const handleListen = useCallback(async () => {
     setListening(true);
@@ -281,10 +332,13 @@ export default function ReceivePage() {
         </motion.div>
         {/* Action Buttons */}
         <div className="flex gap-3">
-          <Button variant={listening ? 'secondary' : 'gradient-accent'} size="xl" className="flex-1 h-16 rounded-[24px] shadow-xl text-base font-black shadow-primary/10" onClick={handleListen} disabled={listening}>
-            {listening ? 'SCANNER ACTIVE' : 'START RECEIVING'}
+          <Button variant={listening ? 'secondary' : 'gradient-accent'} size="xl" className="flex-1 h-16 rounded-[24px] shadow-xl text-base font-black shadow-primary/10 tracking-widest" onClick={handleListen} disabled={listening}>
+            {listening ? 'ACTIVE' : 'LISTEN'}
           </Button>
-          <Button variant="outline" size="icon" className="h-16 w-16 rounded-[24px] border-border/50" onClick={() => setShowQR(true)}>
+          <Button variant="outline" size="xl" className="flex-1 h-16 bg-muted/40 rounded-[24px] border-border/50 font-black tracking-widest text-foreground gap-2" onClick={() => setShowScanner(true)}>
+            <Scan className="w-5 h-5" /> SCAN PYMT
+          </Button>
+          <Button variant="outline" size="icon" className="h-16 w-16 rounded-[24px] border-border/50 flex-shrink-0" onClick={() => setShowQR(true)}>
             <QrCode className="w-7 h-7" />
           </Button>
         </div>
@@ -310,7 +364,37 @@ export default function ReceivePage() {
         </div>
       </div>
 
-      {/* QR Modal */}
+      {/* Offline QR Scanner Modal */}
+      <AnimatePresence>
+        {showScanner && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-110 bg-background/95 backdrop-blur-xl flex flex-col pt-12">
+            <div className="px-6 flex justify-between items-center mb-8">
+              <div className="space-y-1">
+                <h2 className="text-2xl font-black tracking-tighter">Scan Payment</h2>
+                <p className="text-xs text-muted-foreground uppercase tracking-widest font-black">100% Offline Transfer</p>
+              </div>
+              <Button variant="ghost" size="icon" className="rounded-full bg-muted/50" onClick={() => {
+                if (scannerRef.current) scannerRef.current.stop().catch(() => {});
+                setShowScanner(false);
+              }}>
+                <CloseIcon className="w-6 h-6" />
+              </Button>
+            </div>
+            
+            <div className="flex-1 flex flex-col items-center justify-center px-6">
+              <div className="w-full max-w-sm aspect-square bg-muted/30 rounded-[40px] border-2 border-dashed border-primary/30 overflow-hidden relative">
+                <div id="receive-qr-reader" className="w-full h-full [&>video]:object-cover" />
+                <div className="absolute inset-0 pointer-events-none border-[16px] border-background/20 rounded-[40px]" />
+              </div>
+              <p className="mt-8 text-center text-[10px] text-muted-foreground uppercase font-black tracking-widest px-8 leading-loose">
+                Point at Sender's "Offline Transfer" QR to receive tokens instantly without any network connection.
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Pairing QR Modal */}
       <AnimatePresence>
         {showQR && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowQR(false)} className="fixed inset-0 z-100 bg-black/60 backdrop-blur-md flex items-center justify-center p-6">

@@ -22,6 +22,7 @@ import { BottomNav } from '@/components/BottomNav';
 import { useWallet } from '@/hooks/useWallet';
 import { toast } from 'sonner';
 import { Html5QrcodeScanner } from 'html5-qrcode';
+import { QRCodeSVG } from 'qrcode.react';
 import { supabase } from '@/integrations/supabase/client';
 import { sendP2PPayload, encodeBLEPayment, type P2PPayload } from '@/lib/p2p-bridge';
 import { 
@@ -55,6 +56,7 @@ export default function SendPage() {
 
   const [confirmPin, setConfirmPin] = useState(false);
   const [pin, setPin] = useState('');
+  const [paymentQRData, setPaymentQRData] = useState<string | null>(null);
 
   const gridMuktDevices = devices.filter(d => 
     d.name.toLowerCase().includes('mukt') || d.name.startsWith(APP_PREFIX)
@@ -249,6 +251,7 @@ export default function SendPage() {
       // Credit sender side immediately (tokens deducted)
       sendTokens(val, selectedDevice?.name || 'Pair Device');
       setSuccess(`${val.toFixed(2)} TKN SENT TO ${selectedDevice?.name.replace(APP_PREFIX, '') || 'NFC RECIPIENT'}`);
+      setPaymentQRData(JSON.stringify(payload));
       setAmount('');
       setSelectedDevice(null);
     } catch (error) {
@@ -393,7 +396,18 @@ export default function SendPage() {
                 <div className="mt-8 p-6 bg-muted/30 rounded-[32px] border border-border/50">
                    <p className="text-xs text-muted-foreground font-black tracking-widest leading-loose">{success}</p>
                 </div>
-                <Button className="mt-12 w-full h-16 rounded-[24px] text-sm font-black shadow-xl" variant="outline" onClick={() => setSuccess(null)}>BACK TO POOL</Button>
+                
+                {paymentQRData && (
+                   <div className="mt-6 flex flex-col items-center justify-center space-y-4">
+                      <p className="text-[10px] uppercase font-black tracking-widest text-primary">Backup Offline Transfer QR</p>
+                      <div className="bg-white p-4 rounded-3xl shadow-inner border border-border">
+                         <QRCodeSVG value={paymentQRData} size={150} />
+                      </div>
+                      <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-black max-w-[200px] leading-relaxed opacity-60">Receiver can scan this if BLE fails</p>
+                   </div>
+                )}
+
+                <Button className="mt-8 w-full h-16 rounded-[24px] text-sm font-black shadow-xl" variant="outline" onClick={() => { setSuccess(null); setPaymentQRData(null); }}>BACK TO POOL</Button>
              </motion.div>
           </motion.div>
         )}
