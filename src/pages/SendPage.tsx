@@ -23,7 +23,7 @@ import { useWallet } from '@/hooks/useWallet';
 import { toast } from 'sonner';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import { supabase } from '@/integrations/supabase/client';
-import { sendP2PPayload, type P2PPayload } from '@/lib/p2p-bridge';
+import { sendP2PPayload, encodeBLEPayment, type P2PPayload } from '@/lib/p2p-bridge';
 import { 
   scanForDevices, 
   ensureBluetoothEnabled, 
@@ -191,17 +191,39 @@ export default function SendPage() {
         signature: 'gridmukt_final_pro_sig'
       };
 
-      // ── PRIMARY: Offline P2P Bridge (BroadcastChannel + localStorage) ──
-      // Works in airplane mode between two instances of the app
+      // Extract the receiver's Bridge ID
       const bridgeId = selectedDevice?.name.startsWith(APP_PREFIX)
         ? selectedDevice.name.replace(APP_PREFIX, '')
-        : selectedDevice?.id;
+        : selectedDevice?.id || '';
 
+      // ── LAYER 1: BLE Advertisement Payload (real airplane mode, cross-physical-device) ──
+      // Encodes payment in BLE name: GM_<receiverId8>_<amount>_<tx6>
+      // Receiver does continuous BLE scan and decodes it on pickup
+      const isNativeApp = !!(window as any).Capacitor?.isNativePlatform();
+      if (isNativeApp && bridgeId) {
+        try {
+          const { BleClient } = await import('@capacitor-community/bluetooth-le');
+          await BleClient.initialize({ androidNeverForLocation: false });
+          const txId = payload.transactionId;
+          const adName = encodeBLEPayment(bridgeId, val, txId);
+          console.log('[BLE] Starting payment advertisement:', adName);
+          await (BleClient as any).startAdvertising({ name: adName, services: [] });
+          console.log('[BLE] Payment ad live for 30s');
+          // Stop after 30 seconds
+          setTimeout(() => {
+            (BleClient as any).stopAdvertising().catch(() => {});
+            console.log('[BLE] Payment ad stopped');
+          }, 30000);
+        } catch (e: any) {
+          console.warn('[BLE] BLE advertising failed:', e?.message || e);
+        }
+      }
+
+      // ── LAYER 2: Same-device offline (BroadcastChannel + localStorage) ──
       const p2pPayload: P2PPayload = { ...payload, targetId: bridgeId || undefined };
       sendP2PPayload(p2pPayload);
-      console.log('[P2P] Offline payload dispatched for:', bridgeId);
 
-      // ── SECONDARY: Supabase Realtime (online bonus, non-blocking) ──
+      // ── LAYER 3: Supabase Realtime (works when online, non-blocking) ──
       if (bridgeId) {
          const channel = supabase.channel(`p2p_bridge_${bridgeId}`, {
             config: { broadcast: { ack: true } }
@@ -213,34 +235,22 @@ export default function SendPage() {
                   event: 'PAY_LOAD_INIT',
                   payload: payload
                }).then(() => {
-                  console.log('Bridge: Supabase signal sent');
                   setTimeout(() => supabase.getChannels().forEach(ch => supabase.removeChannel(ch)), 2000);
-               }).catch(e => console.warn('Bridge: Supabase offline (expected in airplane mode)', e));
+               }).catch(() => {});
             }
          });
       }
-      // Local Native Handshake (NFC/BT)
-      let sent = false;
-      if (method === 'nfc') {
-        const isApp = !!(window as any).Capacitor?.isNativePlatform();
-        if (isApp) {
-           sent = await shareViaNfc(payload as NfcTokenPayload);
-        } else {
-           sent = await simulateNfcSend(payload as NfcTokenPayload);
-        }
-      } else {
-        const verified = await verifyDevice(selectedDevice!.name);
-        if (verified) {
-           sent = await simulateBluetoothSend(payload as BluetoothTokenPayload, selectedDevice!.name);
-        }
+
+      // ── NFC native send ──
+      if (method === 'nfc' && isNativeApp) {
+        await shareViaNfc(payload as NfcTokenPayload);
       }
 
-      if (sent) {
-        sendTokens(val, selectedDevice?.name || 'Pair Device');
-        setSuccess(`${val.toFixed(2)} TKN SENT TO ${selectedDevice?.name.replace(APP_PREFIX, '') || 'NFC RECIPIENT'}`);
-        setAmount('');
-        setSelectedDevice(null);
-      }
+      // Credit sender side immediately (tokens deducted)
+      sendTokens(val, selectedDevice?.name || 'Pair Device');
+      setSuccess(`${val.toFixed(2)} TKN SENT TO ${selectedDevice?.name.replace(APP_PREFIX, '') || 'NFC RECIPIENT'}`);
+      setAmount('');
+      setSelectedDevice(null);
     } catch (error) {
       toast.error('Transfer failed');
     } finally {

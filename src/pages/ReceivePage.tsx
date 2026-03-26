@@ -8,7 +8,7 @@ import { BottomNav } from '@/components/BottomNav';
 import { useWallet } from '@/hooks/useWallet';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
-import { startP2PListener, type P2PPayload } from '@/lib/p2p-bridge';
+import { startP2PListener, decodeBLEPayment, BLE_AD_PREFIX, type P2PPayload } from '@/lib/p2p-bridge';
 import {
   checkNfcStatus,
   openNfcSettings,
@@ -41,6 +41,7 @@ export default function ReceivePage() {
   const [isBridged, setIsBridged] = useState(false);
   const channelRef = useRef<any>(null);
   const p2pCleanupRef = useRef<(() => void) | null>(null);
+  const bleScanActive = useRef(false);
 
   // Initialise persistent identity and status checks
   useEffect(() => {
@@ -138,8 +139,10 @@ export default function ReceivePage() {
         p2pCleanupRef.current();
         p2pCleanupRef.current = null;
       }
-      // Stop Advertising if unmounting
+      // Stop BLE scan and advertising
+      bleScanActive.current = false;
       import('@capacitor-community/bluetooth-le').then(({ BleClient }) => {
+        BleClient.stopLEScan().catch(() => {});
         (BleClient as any).stopAdvertising().catch(() => {});
       });
     };
@@ -148,13 +151,8 @@ export default function ReceivePage() {
   const handleListen = useCallback(async () => {
     setListening(true);
     setReceived(null);
-    if (method === 'bluetooth' && isNative) {
-      const isEnabled = await isBluetoothAvailable();
-      if (!isEnabled) {
-        const ok = await ensureBluetoothEnabled();
-        if (!ok) toast.error('Could not enable Bluetooth.');
-      }
-    }
+
+    // ── NFC ──
     if (method === 'nfc') {
       const status = await checkNfcStatus();
       if (status.available && !status.enabled) {
@@ -165,24 +163,62 @@ export default function ReceivePage() {
       }
       if (status.available && status.enabled) {
         startListening(handleReceive);
+        toast.info('NFC ready — tap phones together');
+      } else {
+        toast.warning('NFC not available — switching to BLE scan');
       }
     }
 
-    // NEW: Start Secure BLE Advertising so Senders can "Scan" us
+    // ── BLE: Advertise our identity + scan for incoming payments ──
     if (isNative) {
-      import('@capacitor-community/bluetooth-le').then(({ BleClient }) => {
-        BleClient.initialize({ androidNeverForLocation: false }).then(() => {
-          // Advertise as GridMukt with our ID in the name
-          (BleClient as any).startAdvertising({
-            services: ["0000180f-0000-1000-8000-00805f9b34fb"], // Standard Battery Service UUID as bait
-            name: myName,
-          }).catch((e: any) => console.error("BLE Advertising failed:", e));
-        });
-      });
-    }
+      try {
+        const { BleClient } = await import('@capacitor-community/bluetooth-le');
+        await BleClient.initialize({ androidNeverForLocation: false });
 
-    toast.info(`Bridge listener & BLE Advertising activated for: ${myName.replace(APP_PREFIX, '')}`);
-  }, [method, isNative, handleReceive, myName]);
+        // 1) Advertise our identity so sender can discover us
+        try {
+          await (BleClient as any).startAdvertising({
+            name: myName,  // GridMukt_<myId>
+            services: [],
+          });
+          console.log('[BLE] Advertising as:', myName);
+        } catch (e) {
+          console.warn('[BLE] Advertising not supported on this device:', e);
+        }
+
+        // 2) CONTINUOUSLY SCAN for incoming payment advertisements
+        // The sender encodes the payment in its BLE advertisement name:
+        // Format: GM_<myId8>_<amount>_<shortTxId>
+        bleScanActive.current = true;
+        await BleClient.requestLEScan(
+          { allowDuplicates: true },
+          (result) => {
+            if (!bleScanActive.current) return;
+            const name = result.localName || result.device?.name || '';
+            if (!name.startsWith(BLE_AD_PREFIX)) return;
+
+            console.log('[BLE] Found advertisement:', name);
+            const decoded = decodeBLEPayment(name, myId, 'Nearby Phone');
+            if (decoded) {
+              console.log('[BLE] Payment decoded from advertisement!', decoded);
+              // Stop scan once we receive
+              bleScanActive.current = false;
+              BleClient.stopLEScan().catch(() => {});
+              handleReceive(decoded);
+            }
+          }
+        );
+        console.log('[BLE] Continuous scan started — waiting for payment ad...');
+        toast.success(`Listening via BLE: ${myName.replace(APP_PREFIX, '')}`);
+      } catch (e: any) {
+        console.error('[BLE] Error:', e);
+        toast.error('BLE init failed: ' + (e?.message || e));
+      }
+    } else {
+      // Web/browser fallback
+      toast.info(`Offline bridge active for: ${myName.replace(APP_PREFIX, '')}`);
+    }
+  }, [method, isNative, handleReceive, myName, myId]);
 
   const triggerMock = () => {
     if (method === 'nfc') simulateNfcReceive(handleReceive, 500);

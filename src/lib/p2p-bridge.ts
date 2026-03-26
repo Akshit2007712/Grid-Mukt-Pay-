@@ -1,18 +1,16 @@
 /**
- * p2p-bridge.ts
- * 
- * GridMukt Offline P2P Transfer Engine
- * 
- * Strategy (multi-layer fallback):
- * 1. Supabase Realtime (online) — fastest, works cross-network
- * 2. BroadcastChannel API — works between app tabs / PWA windows on same device
- * 3. localStorage polling — universal fallback, works on same device / shared storage
- * 4. BLE Advertisement payload — encodes payment into the device name (offline, cross-device)
+ * p2p-bridge.ts — GridMukt Offline P2P Transfer Engine
+ *
+ * Delivery layers (in priority order):
+ * 1. BLE Advertisement payload — works between 2 physical phones in airplane mode (Bluetooth ON)
+ * 2. Supabase Realtime        — works when online
+ * 3. BroadcastChannel         — works between tabs on the same device
+ * 4. localStorage polling     — same-device fallback
  */
 
 export const BRIDGE_CHANNEL = 'gridmukt_p2p_channel';
 export const BRIDGE_STORAGE_KEY = 'gridmukt_pending_payload';
-export const BRIDGE_ACK_KEY = 'gridmukt_payload_ack';
+export const BLE_AD_PREFIX = 'GM_'; // short prefix to fit BLE name limit (~26 bytes)
 
 export interface P2PPayload {
   amount: number;
@@ -20,168 +18,117 @@ export interface P2PPayload {
   transactionId: string;
   timestamp: string;
   signature: string;
-  targetId?: string; // receiver's myId
+  targetId?: string;
 }
 
-let broadcastChannel: BroadcastChannel | null = null;
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+// ─────────────────────────────────────────────────────────────
+// BLE NAME ENCODING  (Sender → Advertises → Receiver Decodes)
+// Format: GM_<RECEIVERID8>_<AMOUNT>_<TX6>
+// Example: GM_ABCD1234_100_F3A2B1   (22 chars — fits BLE limit)
+// ─────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────
-// SENDER SIDE
-// ─────────────────────────────────────────────
+export function encodeBLEPayment(receiverId: string, amount: number, txId: string): string {
+  const shortTx = txId.replace(/-/g, '').substring(0, 6).toUpperCase();
+  const shortId = receiverId.substring(0, 8).toUpperCase();
+  return `${BLE_AD_PREFIX}${shortId}_${Math.round(amount)}_${shortTx}`;
+}
 
 /**
- * Send a payment payload via all available offline channels.
- * Returns true immediately — delivery is best-effort.
+ * Parse a BLE advertisement name and return decoded payment if it
+ * was addressed to `myId`, otherwise null.
  */
-export function sendP2PPayload(payload: P2PPayload): void {
-  const serialized = JSON.stringify(payload);
+export function decodeBLEPayment(
+  bleName: string,
+  myId: string,
+  senderName: string = 'Nearby Phone'
+): P2PPayload | null {
+  if (!bleName || !bleName.startsWith(BLE_AD_PREFIX)) return null;
+  const body = bleName.substring(BLE_AD_PREFIX.length); // RECEIVERID8_AMOUNT_TX6
+  const parts = body.split('_');
+  if (parts.length < 3) return null;
 
-  // Channel 1: BroadcastChannel (same device / PWA tabs)
+  const encodedId = parts[0].toUpperCase();
+  const myIdShort = myId.substring(0, 8).toUpperCase();
+  if (encodedId !== myIdShort) return null; // not for me
+
+  const amount = parseInt(parts[1], 10);
+  const shortTx = parts[2];
+  if (isNaN(amount) || amount <= 0) return null;
+
+  return {
+    amount,
+    senderName,
+    transactionId: shortTx + '_ble_' + Date.now(),
+    timestamp: Date.now().toString(),
+    signature: 'gridmukt_ble_sig',
+    targetId: myId,
+  };
+}
+
+// ─────────────────────────────────────
+// SAME-DEVICE CHANNELS (BroadcastChannel + localStorage)
+// ─────────────────────────────────────
+
+export function sendP2PPayload(payload: P2PPayload): void {
+  // BroadcastChannel (cross-tab, same device)
   try {
     const bc = new BroadcastChannel(BRIDGE_CHANNEL);
     bc.postMessage(payload);
     setTimeout(() => bc.close(), 3000);
-    console.log('[P2P] BroadcastChannel: payload sent');
-  } catch (e) {
-    console.warn('[P2P] BroadcastChannel not available', e);
-  }
+  } catch (e) {}
 
-  // Channel 2: localStorage piggyback (polling fallback)
+  // localStorage (polling fallback)
   try {
-    const entry = { payload, sentAt: Date.now() };
-    localStorage.setItem(BRIDGE_STORAGE_KEY, JSON.stringify(entry));
-    console.log('[P2P] localStorage: payload written');
-  } catch (e) {
-    console.warn('[P2P] localStorage write failed', e);
-  }
-
-  // Channel 3: Storage event (cross-tab on same origin)
-  try {
-    // Writes trigger 'storage' events in other tabs
-    window.dispatchEvent(new StorageEvent('storage', {
-      key: BRIDGE_STORAGE_KEY,
-      newValue: serialized,
-      storageArea: localStorage
-    }));
+    localStorage.setItem(BRIDGE_STORAGE_KEY, JSON.stringify({ payload, sentAt: Date.now() }));
   } catch (e) {}
 }
 
-// ─────────────────────────────────────────────
-// RECEIVER SIDE
-// ─────────────────────────────────────────────
-
-/**
- * Start listening for incoming P2P payloads via all offline channels.
- * @param onReceive callback when a payment is received
- * @param myId the receiver's bridge ID (to filter targeted payloads)
- * @returns cleanup function
- */
 export function startP2PListener(
   onReceive: (payload: P2PPayload) => void,
   myId: string
 ): () => void {
-  const processedIds = new Set<string>();
+  const seen = new Set<string>();
 
-  function handlePayload(payload: any) {
+  function handle(payload: any) {
     if (!payload?.amount || !payload?.transactionId) return;
-    // Accept if targeted to us OR broadcast to all
     if (payload.targetId && payload.targetId !== myId) return;
-    if (processedIds.has(payload.transactionId)) return;
-    processedIds.add(payload.transactionId);
-
-    console.log('[P2P] Received payload:', payload);
+    if (seen.has(payload.transactionId)) return;
+    seen.add(payload.transactionId);
     onReceive(payload as P2PPayload);
-
-    // Acknowledge so sender side can confirm
-    localStorage.setItem(BRIDGE_ACK_KEY, JSON.stringify({
-      txId: payload.transactionId,
-      receivedAt: Date.now(),
-      receiverId: myId
-    }));
   }
 
-  // Channel 1: BroadcastChannel
+  // BroadcastChannel
+  let bc: BroadcastChannel | null = null;
   try {
-    broadcastChannel = new BroadcastChannel(BRIDGE_CHANNEL);
-    broadcastChannel.onmessage = (e) => {
-      console.log('[P2P] BroadcastChannel: got message');
-      handlePayload(e.data);
-    };
-    console.log('[P2P] BroadcastChannel: listening');
-  } catch (e) {
-    console.warn('[P2P] BroadcastChannel not available');
-  }
+    bc = new BroadcastChannel(BRIDGE_CHANNEL);
+    bc.onmessage = (e) => handle(e.data);
+  } catch (e) {}
 
-  // Channel 2: localStorage polling (cross-device on same WiFi via shared Supabase storage or same device)
-  const lastSeen = { id: '' };
-  pollInterval = setInterval(() => {
+  // localStorage polling
+  const lastId = { v: '' };
+  const poll = setInterval(() => {
     try {
       const raw = localStorage.getItem(BRIDGE_STORAGE_KEY);
       if (!raw) return;
       const entry = JSON.parse(raw);
-      const payload = entry.payload || entry;
-      if (!payload?.transactionId) return;
-      if (payload.transactionId === lastSeen.id) return;
-      lastSeen.id = payload.transactionId;
-      // Only process if recent (within last 30 seconds)
-      const age = Date.now() - (entry.sentAt || 0);
-      if (age > 30000) return;
-      handlePayload(payload);
-    } catch (e) {}
+      const p = entry.payload || entry;
+      if (!p?.transactionId || p.transactionId === lastId.v) return;
+      if (Date.now() - (entry.sentAt || 0) > 30000) return;
+      lastId.v = p.transactionId;
+      handle(p);
+    } catch {}
   }, 500);
 
-  // Channel 3: storage event (cross-tab)
+  // StorageEvent (zero-latency cross-tab)
   const onStorage = (e: StorageEvent) => {
     if (e.key !== BRIDGE_STORAGE_KEY || !e.newValue) return;
-    try {
-      const entry = JSON.parse(e.newValue);
-      handlePayload(entry.payload || entry);
-    } catch {}
+    try { handle(JSON.parse(e.newValue)?.payload); } catch {}
   };
   window.addEventListener('storage', onStorage);
 
-  console.log(`[P2P] All listeners active for receiver: ${myId}`);
-
-  // Return cleanup
   return () => {
-    if (broadcastChannel) {
-      broadcastChannel.close();
-      broadcastChannel = null;
-    }
-    if (pollInterval) {
-      clearInterval(pollInterval);
-      pollInterval = null;
-    }
+    bc?.close();
+    clearInterval(poll);
     window.removeEventListener('storage', onStorage);
-    console.log('[P2P] All listeners stopped');
-  };
-}
-
-/**
- * Encode a compact payload into a BLE advertisement name suffix.
- * Format: GridMukt_<receiverId>_<amount>_<shortTxId>
- * This is readable by scanner and allows the receiver to self-detect.
- */
-export function encodeBLEName(receiverId: string, amount: number, txId: string): string {
-  const shortTx = txId.replace(/-/g, '').substring(0, 6).toUpperCase();
-  return `GridMukt_${receiverId}_${Math.round(amount)}_${shortTx}`;
-}
-
-/**
- * Try to parse a payment from a BLE device name.
- * Returns null if not a payment advertisement.
- */
-export function decodeBLEName(bleName: string): { receiverId: string; amount: number; txId: string } | null {
-  // Format: GridMukt_<receiverId>_<amount>_<shortTxId>
-  const parts = bleName.split('_');
-  // GridMukt _ <id> _ <amount> _ <txId>
-  if (parts.length < 4 || parts[0] !== 'GridMukt') return null;
-  const amount = parseInt(parts[2]);
-  if (isNaN(amount) || amount <= 0) return null;
-  return {
-    receiverId: parts[1],
-    amount,
-    txId: parts[3]
   };
 }
