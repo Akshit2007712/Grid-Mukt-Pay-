@@ -23,6 +23,7 @@ import { useWallet } from '@/hooks/useWallet';
 import { toast } from 'sonner';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import { supabase } from '@/integrations/supabase/client';
+import { sendP2PPayload, type P2PPayload } from '@/lib/p2p-bridge';
 import { 
   scanForDevices, 
   ensureBluetoothEnabled, 
@@ -190,18 +191,21 @@ export default function SendPage() {
         signature: 'gridmukt_final_pro_sig'
       };
 
-      // REAL-TIME BROADCAST (Ensures receipt on other phone)
-      const bridgeId = selectedDevice?.name.startsWith(APP_PREFIX) 
-        ? selectedDevice.name.replace(APP_PREFIX, '') 
+      // ── PRIMARY: Offline P2P Bridge (BroadcastChannel + localStorage) ──
+      // Works in airplane mode between two instances of the app
+      const bridgeId = selectedDevice?.name.startsWith(APP_PREFIX)
+        ? selectedDevice.name.replace(APP_PREFIX, '')
         : selectedDevice?.id;
 
+      const p2pPayload: P2PPayload = { ...payload, targetId: bridgeId || undefined };
+      sendP2PPayload(p2pPayload);
+      console.log('[P2P] Offline payload dispatched for:', bridgeId);
+
+      // ── SECONDARY: Supabase Realtime (online bonus, non-blocking) ──
       if (bridgeId) {
-         console.log(`Sending to Bridge ID: ${bridgeId}`);
          const channel = supabase.channel(`p2p_bridge_${bridgeId}`, {
             config: { broadcast: { ack: true } }
          });
-         
-         // DON'T AWAIT: Allow local NFC/BT fallback even if Supabase bridge fails fast or hangs
          channel.subscribe((status) => {
             if (status === 'SUBSCRIBED') {
                channel.send({
@@ -209,9 +213,9 @@ export default function SendPage() {
                   event: 'PAY_LOAD_INIT',
                   payload: payload
                }).then(() => {
-                  console.log('Bridge: Asset signaled');
+                  console.log('Bridge: Supabase signal sent');
                   setTimeout(() => supabase.getChannels().forEach(ch => supabase.removeChannel(ch)), 2000);
-               }).catch(e => console.warn('Bridge: Broadcast failed', e));
+               }).catch(e => console.warn('Bridge: Supabase offline (expected in airplane mode)', e));
             }
          });
       }

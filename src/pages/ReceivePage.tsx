@@ -8,6 +8,7 @@ import { BottomNav } from '@/components/BottomNav';
 import { useWallet } from '@/hooks/useWallet';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
+import { startP2PListener, type P2PPayload } from '@/lib/p2p-bridge';
 import {
   checkNfcStatus,
   openNfcSettings,
@@ -39,6 +40,7 @@ export default function ReceivePage() {
   const [myName, setMyName] = useState('');
   const [isBridged, setIsBridged] = useState(false);
   const channelRef = useRef<any>(null);
+  const p2pCleanupRef = useRef<(() => void) | null>(null);
 
   // Initialise persistent identity and status checks
   useEffect(() => {
@@ -97,16 +99,17 @@ export default function ReceivePage() {
     setTimeout(() => setReceived(null), 4000);
   }, [receiveTokens, received]);
 
-  // Persistent Supabase bridge listener
+  // Persistent bridge listeners — Supabase (online) + Offline P2P fallback
   useEffect(() => {
     if (!myId) return;
     
+    // ── Layer 1: Supabase Realtime (online only) ──
     console.log(`GridMukt Sync: Subscribing to bridge_${myId}`);
     const channel = supabase.channel(`p2p_bridge_${myId}`, { 
       config: { broadcast: { ack: true } } 
     })
       .on('broadcast', { event: 'PAY_LOAD_INIT' }, ({ payload }) => {
-        console.log("Bridge: Received Asset Payload", payload);
+        console.log("Bridge: Received Asset Payload via Supabase", payload);
         handleReceive(payload);
       })
       .subscribe((status) => {
@@ -116,10 +119,24 @@ export default function ReceivePage() {
       });
       
     channelRef.current = channel;
+
+    // ── Layer 2: Offline P2P (BroadcastChannel + localStorage polling) ──
+    // This works even in airplane mode when Supabase is down
+    console.log(`[P2P] Starting offline listener for: ${myId}`);
+    const cleanup = startP2PListener((payload: P2PPayload) => {
+      console.log("Bridge: Received via Offline P2P", payload);
+      handleReceive(payload);
+    }, myId);
+    p2pCleanupRef.current = cleanup;
+
     return () => {
       if (channelRef.current) {
-        console.log("Bridge: Removing listener");
+        console.log("Bridge: Removing Supabase listener");
         supabase.removeChannel(channelRef.current);
+      }
+      if (p2pCleanupRef.current) {
+        p2pCleanupRef.current();
+        p2pCleanupRef.current = null;
       }
       // Stop Advertising if unmounting
       import('@capacitor-community/bluetooth-le').then(({ BleClient }) => {
