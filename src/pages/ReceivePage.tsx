@@ -156,22 +156,27 @@ export default function ReceivePage() {
     };
   }, [myId, handleReceive]);
 
+  const lastScanCall = useRef<number>(0);
+
   const handleQRDetected = useCallback((decodedText: string) => {
+    // Prevent spamming
+    const now = Date.now();
+    if (now - lastScanCall.current < 2000) return;
+    lastScanCall.current = now;
+
     try {
       const data = JSON.parse(decodedText);
       if (data.amount && data.signature === 'gridmukt_final_pro_sig') {
-        setShowScanner(false);
-        if (scannerRef.current) {
-           scannerRef.current.stop().catch(() => {});
-           scannerRef.current = null;
-        }
+        setShowScanner(false); // Modal logic will cleanly unmount
         handleReceive(data);
-        toast.success('Offline Payment QR Scanned!');
+      } else if (data.type === 'wallet_pair') {
+        toast.error('This is a Pair QR. Please scan the Payment QR from Sender.');
       } else {
-        toast.error('Invalid Payment QR');
+        toast.error('Invalid Payment QR Format');
       }
     } catch {
-      toast.error('Unrecognized QR Format');
+      // Don't spam toast on partial/wrong QR. Just log
+      console.warn('Unrecognized QR Format:', decodedText);
     }
   }, [handleReceive]);
 

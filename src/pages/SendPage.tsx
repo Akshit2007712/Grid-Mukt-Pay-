@@ -401,7 +401,7 @@ export default function SendPage() {
                    <div className="mt-6 flex flex-col items-center justify-center space-y-4">
                       <p className="text-[10px] uppercase font-black tracking-widest text-primary">Backup Offline Transfer QR</p>
                       <div className="bg-white p-4 rounded-3xl shadow-inner border border-border">
-                         <QRCodeSVG value={paymentQRData} size={150} />
+                         <QRCodeSVG value={paymentQRData} size={220} />
                       </div>
                       <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-black max-w-[200px] leading-relaxed opacity-60">Receiver can scan this if BLE fails</p>
                    </div>
